@@ -18,7 +18,7 @@ defmodule Redix.Connection.Auth do
       {:ok, s} ->
         case select_db(s, s.opts[:database]) do
           {:ok, s} ->
-            :ok = :inet.setopts(s.socket, active: :once)
+            # :ok = :inet.setopts(s.socket, active: :once)
             {:ok, s}
           o ->
             o

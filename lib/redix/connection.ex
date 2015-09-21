@@ -5,6 +5,7 @@ defmodule Redix.Connection do
 
   alias Redix.Protocol
   alias Redix.ConnectionUtils
+  alias Redix.Connection.Listener
   require Logger
 
   @type state :: %{}
@@ -20,6 +21,8 @@ defmodule Redix.Connection do
     queue: :queue.new,
     # The number of times a reconnection has been attempted
     reconnection_attempts: 0,
+
+    listener: nil,
   }
 
   ## Callbacks
@@ -33,7 +36,13 @@ defmodule Redix.Connection do
   def connect(info, s)
 
   def connect(info, s) do
-    ConnectionUtils.connect(info, s)
+    case ConnectionUtils.connect(info, s) do
+      {:ok, s} ->
+        s = start_listener_process(s)
+        {:ok, s}
+      o ->
+        o
+    end
   end
 
   @doc false
@@ -67,9 +76,8 @@ defmodule Redix.Connection do
   end
 
   def handle_call({:commands, commands}, from, s) do
-    s
-    |> Map.update!(:queue, &:queue.in({:commands, from, length(commands)}, &1))
-    |> ConnectionUtils.send_noreply(Enum.map(commands, &Protocol.pack/1))
+    Listener.enqueue(s.listener, {:commands, from, length(commands)})
+    ConnectionUtils.send_noreply(s, Enum.map(commands, &Protocol.pack/1))
   end
 
   @doc false
@@ -80,45 +88,27 @@ defmodule Redix.Connection do
   end
 
   @doc false
-  def handle_info(msg, s)
-
-  def handle_info({:tcp, socket, data}, %{socket: socket} = s) do
-    :ok = :inet.setopts(socket, active: :once)
-    s = new_data(s, s.tail <> data)
-    {:noreply, s}
+  def handle_info({:redix_listener, listener, msg}, %{listener: listener} = s) do
+    handle_msg_from_listener(msg, s)
   end
-
-  def handle_info({:tcp_closed, socket}, %{socket: socket} = s) do
-    {:disconnect, {:error, :tcp_closed}, s}
-  end
-
-  def handle_info({:tcp_error, socket, reason}, %{socket: socket} = s) do
-    {:disconnect, {:error, reason}, s}
-  end
-
-  ## Helper functions
-
-  defp new_data(s, <<>>) do
-    %{s | tail: <<>>}
-  end
-
-  defp new_data(s, data) do
-    {{:value, {:commands, from, ncommands}}, new_queue} = :queue.out(s.queue)
-
-    case Protocol.parse_multi(data, ncommands) do
-      {:ok, resp, rest} ->
-        Connection.reply(from, format_resp(resp))
-        s = %{s | queue: new_queue}
-        new_data(s, rest)
-      {:error, :incomplete} ->
-        %{s | tail: data}
-    end
-  end
-
-  defp format_resp(%Redix.Error{} = err), do: {:error, err}
-  defp format_resp(resp), do: {:ok, resp}
 
   defp reset_state(s) do
     %{s | queue: :queue.new, tail: "", socket: nil}
+  end
+
+  defp start_listener_process(s) do
+    {:ok, pid} = Listener.start_link(parent: self(), socket: s.socket)
+    :ok = :gen_tcp.controlling_process(s.socket, pid)
+    :ok = :inet.setopts(s.socket, active: :once)
+    %{s | listener: pid}
+  end
+
+  defp handle_msg_from_listener({:disconnect, info}, s) do
+    {:disconnect, info, s}
+  end
+
+  defp handle_msg_from_listener({:reply, from, reply}, s) do
+    Connection.reply(from, reply)
+    {:noreply, s}
   end
 end

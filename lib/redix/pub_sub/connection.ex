@@ -35,6 +35,8 @@ defmodule Redix.PubSub.Connection do
           s = %{s | clients_to_notify_of_reconnection: []}
         end
 
+        :inet.setopts(s.socket, active: :once)
+
         {:ok, s}
       o ->
         o
