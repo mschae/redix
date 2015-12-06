@@ -3,29 +3,23 @@ defmodule Redix.Connection.Auth do
 
   alias Redix.Protocol
 
-  @doc """
-  Authenticates and selects the right database based on the state `state`.
+  @type error :: Redix.Error.t | atom
 
-  This function checks the state `state` to see if in the options a password
-  and/or a database are specified. If a password is specified, then this
-  function will send the appropriate `AUTH` command to the Redis connection in
-  `state.socket`. If a database is specified, then the appropriate `SELECT`
-  command will be issued.
-  """
-  @spec auth_and_select_db(Redix.Connection.state) ::
-    {:ok, Redix.Connection.state} | {:stop, term, Redix.Connection.state}
+  @spec auth_and_select_db(%{}) :: {:ok, %{}} | {:error, error, %{}}
   def auth_and_select_db(state) do
+    state = Map.put(state, :tail, "")
+
     case auth(state, state.opts[:password]) do
       {:ok, state} ->
         case select_db(state, state.opts[:database]) do
           {:ok, state} ->
             :ok = :inet.setopts(state.socket, active: :once)
             {:ok, state}
-          o ->
-            o
+          {:error, _reason, _state} = err ->
+            err
         end
-      o ->
-        o
+      {:error, _reason, _state} = err ->
+        err
     end
   end
 
@@ -33,20 +27,20 @@ defmodule Redix.Connection.Auth do
     {:ok, state}
   end
 
-  defp auth(%{socket: socket} = state, password) when is_binary(password) do
-    case :gen_tcp.send(socket, Protocol.pack(["AUTH", password])) do
+  defp auth(state, password) when is_binary(password) do
+    case pack_and_send(state, ["AUTH", password]) do
       :ok ->
         case wait_for_response(state) do
           {:ok, "OK", state} ->
             state = put_in(state.opts[:password], :redacted)
             {:ok, state}
           {:ok, error, state} ->
-            {:stop, error, state}
+            {:error, error, state}
           {:error, reason} ->
-            {:stop, reason, state}
+            {:error, reason, state}
         end
       {:error, reason} ->
-        {:stop, reason, state}
+        {:error, reason, state}
     end
   end
 
@@ -54,19 +48,19 @@ defmodule Redix.Connection.Auth do
     {:ok, state}
   end
 
-  defp select_db(%{socket: socket} = state, db) do
-    case :gen_tcp.send(socket, Protocol.pack(["SELECT", db])) do
+  defp select_db(state, db) do
+    case pack_and_send(state, ["SELECT", db]) do
       :ok ->
         case wait_for_response(state) do
           {:ok, "OK", state} ->
             {:ok, state}
           {:ok, error, state} ->
-            {:stop, error, state}
+            {:error, error, state}
           {:error, reason} ->
-            {:stop, reason, state}
+            {:error, reason, state}
         end
       {:error, reason} ->
-        {:stop, reason, state}
+        {:error, reason, state}
     end
   end
 
@@ -85,4 +79,7 @@ defmodule Redix.Connection.Auth do
     end
   end
 
+  defp pack_and_send(%{socket: socket} = _state, command) do
+    :gen_tcp.send(socket, Protocol.pack(command))
+  end
 end

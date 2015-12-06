@@ -1,4 +1,4 @@
-defmodule Redix.ConnectionUtils do
+defmodule Redix.Utils do
   @moduledoc false
 
   require Logger
@@ -20,10 +20,17 @@ defmodule Redix.ConnectionUtils do
     case :gen_tcp.connect(host, port, socket_opts, timeout) do
       {:ok, socket} ->
         setup_socket_buffers(socket)
-        Auth.auth_and_select_db(%{state | socket: socket, reconnection_attempts: 0})
+
+        case Auth.auth_and_select_db(%{state | socket: socket, reconnection_attempts: 0}) do
+          {:ok, state} ->
+            {:ok, state}
+          {:error, _reason, _state} = err ->
+            handle_connection_error(info, err)
+        end
       {:error, reason} ->
-        Logger.error "Error connecting to Redis (#{format_host(state)}): #{:inet.format_error(reason)}"
-        handle_connection_error(state, info, reason)
+        Logger.error ["Error connecting to Redis (#{format_host(state)}):",
+                      :inet.format_error(reason)]
+        handle_connection_error(info, {:error, reason, state})
     end
   end
 
@@ -56,35 +63,13 @@ defmodule Redix.ConnectionUtils do
     end
   end
 
-  # This function is called every time we want to try and reconnect. It returns
-  # {:backoff, ...} if we're below the max number of allowed reconnection
-  # attempts (or if there's no such limit), {:stop, ...} otherwise.
-  @spec backoff_or_stop(Redix.Connection.state, non_neg_integer, term) ::
-    {:backoff, non_neg_integer, Redix.Connection.state} |
-    {:stop, term, Redix.Connection.state}
-  def backoff_or_stop(state, backoff, stop_reason) do
-    s = update_in(state.reconnection_attempts, &(&1 + 1))
-
-    if attempt_to_reconnect?(state) do
-      {:backoff, backoff, state}
-    else
-      {:stop, stop_reason, s}
-    end
+  defp handle_connection_error(:init, {:error, reason, state}) do
+    on_failed_connect_hook(state, reason, :init)
   end
 
-  defp attempt_to_reconnect?(%{opts: opts, reconnection_attempts: attempts}) do
-    max_attempts = opts[:max_reconnection_attempts]
-    is_nil(max_attempts) or (max_attempts > 0 and attempts <= max_attempts)
+  defp handle_connection_error(:backoff, {:error, reason, state}) do
+    on_failed_connect_hook(state, reason, {:backoff, state.on_failed_connect_result})
   end
-
-  # If `info` is :backoff then this is a *reconnection* attempt, so if there's
-  # an error let's try to just reconnect after a backoff time (if we're under
-  # the max number of retries). If `info` is :init, then this is the first
-  # connection attempt so if it fails let's just die.
-  defp handle_connection_error(state, :init, reason),
-    do: {:stop, reason, state}
-  defp handle_connection_error(state, :backoff, reason),
-    do: backoff_or_stop(state, state.opts[:backoff], reason)
 
   # Extracts the TCP connection options (host, port and socket opts) from the
   # given `opts`.
@@ -104,5 +89,20 @@ defmodule Redix.ConnectionUtils do
 
     buffer = buffer |> max(sndbuf) |> max(recbuf)
     :ok = :inet.setopts(socket, [buffer: buffer])
+  end
+
+  defp on_failed_connect_hook(state, error_reason, arg) do
+    fun = state.opts[:on_failed_connect] || fn(_) -> {:backoff, state.opts[:backoff], nil} end
+
+    unless is_function(fun, 1) do
+      raise "on_failed_connect is not a function of arity 1"
+    end
+
+    case fun.(arg) do
+      :stop ->
+        {:stop, error_reason, state}
+      {:backoff, time, next_result} ->
+        {:backoff, time, %{state | on_failed_connect_result: next_result}}
+    end
   end
 end

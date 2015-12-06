@@ -35,7 +35,8 @@ defmodule RedixTest do
   test "start_link/1: specifying a password when no password is set" do
     silence_log fn ->
       Process.flag :trap_exit, true
-      assert {:ok, pid} = Redix.start_link password: "foo"
+      assert {:ok, pid} = Redix.start_link [password: "foo"],
+                                           on_failed_connect: fn(_) -> :stop end
       assert is_pid(pid)
 
       error = %Error{message: "ERR Client sent AUTH, but no password is set"}
@@ -47,7 +48,8 @@ defmodule RedixTest do
   test "start_link/1: specifying a non existing database" do
     silence_log fn ->
       Process.flag :trap_exit, true
-      assert {:ok, pid} = Redix.start_link(database: 1_000)
+      assert {:ok, pid} = Redix.start_link([database: 1_000],
+                                           on_failed_connect: fn(_) -> :stop end)
 
       error = %Error{message: "ERR invalid DB index"}
       assert_receive {:EXIT, ^pid, ^error}, 500
@@ -58,7 +60,8 @@ defmodule RedixTest do
   test "start_link/1: when unable to connect to Redis" do
     silence_log fn ->
       Process.flag :trap_exit, true
-      assert {:ok, pid} = Redix.start_link host: "nonexistent"
+      assert {:ok, pid} = Redix.start_link([host: "nonexistent"],
+                                           [on_failed_connect: fn(_) -> :stop end])
       assert_receive {:EXIT, ^pid, :nxdomain}, 1000
     end
   end
@@ -284,17 +287,6 @@ defmodule RedixTest do
       assert {:ok, _} = Redix.command(c, ~w(CLIENT KILL TYPE normal SKIPME no))
       :timer.sleep(100)
       assert {:ok, "PONG"} = Redix.command(c, ~w(PING))
-    end
-  end
-
-  @tag :no_setup
-  test "exceeding the max number of reconnection attempts" do
-    {:ok, c} = Redix.start_link(max_reconnection_attempts: 0)
-
-    silence_log fn ->
-      Process.flag :trap_exit, true
-      Redix.command(c, ~w(CLIENT KILL TYPE normal SKIPME no))
-      assert_receive {:EXIT, ^c, :tcp_closed}
     end
   end
 end

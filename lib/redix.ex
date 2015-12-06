@@ -66,6 +66,8 @@ defmodule Redix do
   @connection_defaults [
     socket_opts: [],
     backoff: 2000,
+    disconnect: {:backoff, 0},
+    on_failed_connect: nil,
   ]
 
   @default_timeout 5000
@@ -172,7 +174,7 @@ defmodule Redix do
 
   def start_link(redis_opts, connection_opts) when is_list(redis_opts) and is_list(connection_opts) do
     {other_opts, connection_opts} =
-      Keyword.split(connection_opts, [:socket_opts, :backoff, :max_reconnection_attempts])
+      Keyword.split(connection_opts, [:socket_opts, :backoff, :max_reconnection_attempts, :on_failed_connect])
 
     redis_opts = Keyword.merge(@redis_defaults, redis_opts)
     other_opts = Keyword.merge(@connection_defaults, other_opts)
